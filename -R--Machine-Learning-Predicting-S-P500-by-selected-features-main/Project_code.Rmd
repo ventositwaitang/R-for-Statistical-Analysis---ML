@@ -1,0 +1,276 @@
+---
+title: "STAT3612 Project"
+output:
+  word_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+import neccesary library
+```{r}
+# glmnet for lasso and ridge
+# leaps for subset selection
+#install.packages("glmnet")
+#install.packages("leaps")
+require(glmnet)
+library(leaps)
+```
+
+read dataset
+```{r}
+file_path = "D:/HKU/Year3 Sem1/STAT3612/Project/Processed_S&P.csv" # replace it with actual path
+
+# SP500: original dataset
+# Close_after30: vector of Close after 30 days
+# SP500Num: SP500 with added column Close_after30 and without string columns, i.e. Date and Name
+# SPNONA: SP500Num without rows with missing data
+SP500 <- read.csv(file_path)
+SP500Num <- subset(SP500, select = -c(Date, Name) )
+Close_after30 = SP500Num[31:1984, 1]
+SP500Num["Close30"] <- c(Close_after30, rep(NA, nrow(SP500Num)-length(Close_after30)))
+SP500NONA <- SP500Num[complete.cases(SP500Num), ]
+head(SP500NONA)
+```
+
+data cleansing: view consecutive rows with missing data
+```{r}
+# has_NAs: vector of whether the row in SP500Num has missing data
+# skipped_dates: vector of numbers of consecutive days that has any missing data
+has_NAs <- !complete.cases(SP500Num)
+count <- 0
+skipped_dates <- c()
+for (has_NA in has_NAs) {
+  if(!has_NA){
+    if(count != 0){
+    skipped_dates <- c(skipped_dates, count)
+    count = 0
+    } 
+  } else {
+    count = count + 1
+  }
+}
+
+plot(skipped_dates[-1], ylab = "Number of consecutive trading days missed")
+table(skipped_dates[-1])
+```
+
+data cleansing: remove columns that have many missing data (>50)
+```{r}
+# SP500NumFew: SP500Num with columns that have few missing data
+SP500NumFew <- SP500Num[,colSums(is.na(SP500Num))<50]
+SP500NONAFew <- SP500NumFew[complete.cases(SP500NumFew), ]
+has_NAs <- !complete.cases(SP500NumFew)
+count <- 0
+skipped_dates <- c()
+for (has_NA in has_NAs) {
+  if(!has_NA){
+    if(count != 0){
+    skipped_dates <- c(skipped_dates, count)
+    count = 0
+    } 
+  } else {
+    count = count + 1
+  }
+}
+
+plot(skipped_dates[-1], ylab = "Number of consecutive trading days missed")
+table(skipped_dates[-1])
+```
+
+train/test split: 80/20
+```{r}
+train_set <- SP500NONAFew[1:round(nrow(SP500NONAFew)*0.8),]
+test_set <- SP500NONAFew[(round(nrow(SP500NONAFew)*0.8)+1):nrow(SP500NONAFew),]
+x_train <- data.matrix(train_set[, !names(train_set) %in% c("Close30")])
+y_train <- train_set[["Close30"]]
+x_test <- data.matrix(test_set[, !names(test_set) %in% c("Close30")])
+y_test <- test_set[["Close30"]]
+```
+
+apply Lasso to find the best lambda, test MSE and number of variables
+```{r}
+set.seed(1)
+model_l1 <- glmnet(x_train, y_train,family = "gaussian", alpha = 1)
+plot(model_l1, xvar='lambda', main="Lasso")
+model_l1_cv <- cv.glmnet(x_train,y_train,family = "gaussian", alpha = 1)
+best_l1_lambda <- model_l1_cv$lambda.min
+plot(model_l1, xvar='lambda', main="Lasso")
+abline(v=log(best_l1_lambda), col="blue", lty=5.5 )
+plot(model_l1_cv)
+l1_predict <- predict(model_l1, s = best_l1_lambda, newx = x_test)
+selected_index = which(coef(model_l1_cv, s = "lambda.min") != 0)
+selected_variables = colnames(x_train)[selected_index]
+message("best lambda = ", best_l1_lambda)
+message("test_set MSE = ", mean((l1_predict-y_test)^2))
+message("number of variables selected = ", length(selected_variables))
+```
+
+apply Ridge to find the best lambda and test MSE
+```{r}
+set.seed(1)
+model_l2 <- glmnet(x_train,y_train,family = "gaussian", alpha = 0)
+plot(model_l2, xvar='lambda', main="Ridge")
+model_l2_cv <- cv.glmnet(x_train,y_train,family = "gaussian", alpha = 0)
+best_l2_lambda <- model_l2_cv$lambda.min
+plot(model_l2, xvar='lambda', main="Ridge")
+abline(v=log(best_l2_lambda), col="blue", lty=5.5 )
+plot(model_l2_cv)
+l2_predict <- predict(model_l2, s = best_l2_lambda, newx = x_test)
+message("best lambda = ", best_l2_lambda)
+message("test_set MSE = ", mean((l2_predict-y_test)^2))
+```
+
+cannot apply best subset selection directly due to large number of predictors
+```{r}
+#selection_full <- regsubsets (Close30 ~ .,data = train_set, nvmax=10)
+# returns error
+```
+
+preform forward stepwise selection and use adjusted R-squared, BIC and Cp to find the optimal model
+```{r}
+selection_forward <- regsubsets (Close30 ~ .,data=train_set ,nvmax=50, method ="forward")
+summary_ <- summary(selection_forward)
+plot(summary_$adjr2, xlab="Number of Variables ", ylab="Adj R2", type="l")
+varF.adjr2 <- which.max(summary_$adjr2)
+points(varF.adjr2,summary_$adjr2[varF.adjr2], col="red",cex=2,pch=20)
+plot(summary_$bic, xlab="Number of Variables ", ylab="BIC", type="l")
+varF.bic <- which.min(summary_$bic)
+points(varF.bic,summary_$bic[varF.bic], col="red",cex=2,pch=20)
+plot(summary_$cp, xlab="Number of Variables ", ylab="Cp", type="l")
+varF.cp <- which.min(summary_$cp)
+points(varF.cp,summary_$cp[varF.cp], col="red",cex=2,pch=20)
+message("number of variables for best adjusted R-squared = ", varF.adjr2)
+message("number of variables for best BIC = ", varF.bic)
+message("number of variables for best Cp = ", varF.cp)
+```
+
+preform backward stepwise selection and use adjusted R-squared, BIC and Cp to find the optimal model
+```{r}
+selection_backward <- regsubsets (Close30 ~ .,data=train_set ,nvmax=50, method ="backward")
+summary_ <- summary(selection_backward)
+plot(summary_$adjr2, xlab="Number of Variables ", ylab="Adj R2", type="l")
+varB.adjr2 <- which.max(summary_$adjr2)
+points(varB.adjr2,summary_$adjr2[varB.adjr2], col="red",cex=2,pch=20)
+plot(summary_$bic, xlab="Number of Variables ", ylab="BIC", type="l")
+varB.bic <- which.min(summary_$bic)
+points(varB.bic,summary_$bic[varB.bic], col="red",cex=2,pch=20)
+plot(summary_$cp, xlab="Number of Variables ", ylab="Cp", type="l")
+varB.cp <- which.min(summary_$cp)
+points(varB.cp,summary_$cp[varB.cp], col="red",cex=2,pch=20)
+message("number of variables for best adjusted R-squared = ", varB.adjr2)
+message("number of variables for best BIC = ", varB.bic)
+message("number of variables for best Cp = ", varB.cp)
+```
+
+calculate test MSE with the best forward model
+```{r}
+test_mat <- model.matrix(Close30 ~ ., data = test_set)
+coef = coef(selection_forward, varF.adjr2)
+pred = test_mat[,names(coef)]%*%coef
+forward_errors.adjr2 = mean((y_test-pred)^2)
+coef = coef(selection_forward, varF.bic)
+pred = test_mat[,names(coef)]%*%coef
+forward_errors.bic = mean((y_test-pred)^2)
+coef = coef(selection_forward, varF.cp)
+pred = test_mat[,names(coef)]%*%coef
+forward_errors.cp = mean((y_test-pred)^2)
+message("test_set MSE with best adjusted R-squared = ", forward_errors.adjr2)
+message("test_set MSE with best BIC = ", forward_errors.bic)
+message("test_set MSE with best Cp = ", forward_errors.cp)
+
+val.errors=rep(NA,50)
+for (i in 1:50){
+ coefi = coef(selection_forward, id=i)
+ pred = test_mat[,names(coefi)]%*%coefi
+ # MSE
+ val.errors[i] = mean((y_test-pred)^2)
+}
+plot(val.errors ,type='b', main="forward selection test error")
+```
+
+calculate test MSE with the best backward model
+```{r}
+test_mat <- model.matrix(Close30 ~ ., data = test_set)
+coef = coef(selection_backward, varB.adjr2)
+pred = test_mat[,names(coef)]%*%coef
+backward_errors.adjr2 = mean((y_test-pred)^2)
+coef = coef(selection_backward, varB.bic)
+pred = test_mat[,names(coef)]%*%coef
+backward_errors.bic = mean((y_test-pred)^2)
+coef = coef(selection_backward, varB.cp)
+pred = test_mat[,names(coef)]%*%coef
+backward_errors.cp = mean((y_test-pred)^2)
+message("test_set MSE with best adjusted R-squared = ", backward_errors.adjr2)
+message("test_set MSE with best BIC = ", backward_errors.bic)
+message("test_set MSE with best Cp = ", backward_errors.cp)
+
+val.errors=rep(NA,50)
+for (i in 1:50){
+ coefi = coef(selection_backward, id=i)
+ pred = test_mat[,names(coefi)]%*%coefi
+ # MSE
+ val.errors[i] = mean((y_test-pred)^2)
+}
+plot(val.errors ,type='b', main="backward selection test error")
+```
+
+calculate mean cv errors(10-fold)
+```{r}
+k=10
+set.seed(1)
+folds = sample(1:k, nrow(train_set), replace=TRUE)
+cv.errors=matrix(NA, k, 50, dimnames=list(NULL, paste(1:50)))
+
+predict.regsubsets = function (object, newdata, id ,...){
+ form=as.formula(object$call [[2]])
+ mat=model.matrix(form,newdata)
+ coefi=coef(object ,id=id)
+ xvars=names(coefi)
+ mat[,xvars]%*%coefi
+ }
+
+for(j in 1:k){
+ best.fit = regsubsets(Close30~., data=train_set[folds!=j,], nvmax=50, method ="forward")
+ for(i in 1:50){
+ pred = predict(best.fit, train_set[folds==j,], id=i)
+ cv.errors[j, i] = mean((train_set$Close30[folds==j]-pred)^2)
+ }
+}
+
+mean.cv.errors = apply(cv.errors, 2, mean)
+plot(mean.cv.errors ,type='b', main="forward selection mean cv error")
+
+for(j in 1:k){
+ best.fit = regsubsets(Close30~., data=train_set[folds!=j,], nvmax=50, method ="backward")
+ for(i in 1:50){
+ pred = predict(best.fit, train_set[folds==j,], id=i)
+ cv.errors[j, i] = mean((train_set$Close30[folds==j]-pred)^2)
+ }
+}
+
+mean.cv.errors = apply(cv.errors, 2, mean)
+plot(mean.cv.errors ,type='b', main="backward selection mean cv error")
+message("backward selection mean cv error of 7 variables = ", mean.cv.errors[7])
+```
+
+final selected model
+```{r}
+coefs <- coef(selection_backward, 7)
+names_ <- names(coefs)
+names_ <- names_[!names_ %in% "(Intercept)"]
+response <- as.character(as.formula(selection_forward$call[[2]])[[2]])
+form <- as.formula(paste(response, paste(names_, collapse = " + "), sep = " ~ "))
+model_best_forward <- glm(form, data = train_set)
+summary(model_best_forward)
+```
+
+use principal component to view variance explained
+```{r}
+pc <- prcomp(x_train, scale = T, center = T)
+var <- pc$sdev^2
+pve <- var / sum(var)
+plot(pve, xlab = "Principal Component", ylab = "Proportion of Variance Explained", ylim = c(0, 1), type = "b")
+plot(cumsum(pve), xlab = "Principal Component", ylab = "Cumulative Proportion of Variance Explained", ylim = c(0, 1), type = "b")
+abline(h=0.8, col="blue", lty=5.5 )
+```
+
